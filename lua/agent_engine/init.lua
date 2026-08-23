@@ -682,6 +682,9 @@ function M.reload()
   local was_open = (chat.winid ~= nil and vim.api.nvim_win_is_valid(chat.winid))
     or (chat.input_winid ~= nil and vim.api.nvim_win_is_valid(chat.input_winid))
   pcall(function()
+    if chat.teardown then
+      chat.teardown()
+    end
     chat.close()
   end)
   local cfg = config.get()

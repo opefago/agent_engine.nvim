@@ -390,9 +390,8 @@ function M.setup_input(bufnr)
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  if vim.b.agent_prompt_complete then
-    return
-  end
+  -- Always rebind so :AgentReload does not leave stale InsertCharPre handlers.
+  pcall(vim.api.nvim_clear_autocmds, { buffer = bufnr, event = "InsertCharPre" })
   vim.b.agent_prompt_complete = true
 
   vim.api.nvim_create_autocmd("InsertCharPre", {

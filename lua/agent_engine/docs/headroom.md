@@ -156,13 +156,15 @@ headroom = { enabled = true, output_shaper = true },
 
 See Headroom README: `headroom learn --verbosity` for automatic terseness tuning.
 
-## Optional Lazy spec
+## Lazy.nvim
+
+Enable Headroom in your agent_engine Lazy spec (e.g. `plugins/agentvim-bundle.lua`):
 
 ```lua
-{ import = "plugins.agent_engine-headroom" }
+headroom = { enabled = true, mode = "proxy" },
 ```
 
-Warns if Headroom is enabled but not on `PATH`.
+`agent_engine.setup()` warns on startup if Headroom is enabled but the CLI is missing from `PATH`.
 
 ## Configuration reference
 

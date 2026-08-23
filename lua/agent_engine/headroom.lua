@@ -192,7 +192,19 @@ function M.spawn_env(cli)
     env.HEADROOM_OUTPUT_SHAPER = "1"
   end
 
-  if mode == "proxy" then
+  -- Cursor agent uses api2.cursor.sh — OpenAI/Anthropic proxy URLs do not apply.
+  local use_proxy_env = mode == "proxy"
+  if cli and cli.dialect == "cursor" then
+    use_proxy_env = false
+    if log.enabled() and mode == "proxy" then
+      log.debug(
+        "headroom",
+        "cursor CLI: proxy env skipped (Cursor uses api2.cursor.sh — configure Headroom in Cursor settings or use Claude/Codex CLI)"
+      )
+    end
+  end
+
+  if use_proxy_env then
     if c.auto_start_proxy then
       local ok, err = M.start_proxy()
       if not ok and c.fallback_on_error == false then
@@ -221,6 +233,11 @@ end
 ---@return string[] args
 function M.adjust_spawn(binary, args, cli)
   if not M.enabled() or M.mode() ~= "wrap" then
+    return binary, args
+  end
+
+  -- Cursor IDE uses manual base-URL setup; `headroom wrap cursor` does not accept a child CLI.
+  if cli and cli.dialect == "cursor" then
     return binary, args
   end
 

@@ -614,6 +614,28 @@ function M.list_running()
   return ids
 end
 
+--- Merge Headroom (or other) overrides into a full process env for uv.spawn.
+--- Passing a partial env replaces the entire environment and breaks the agent CLI.
+---@param overrides table<string, string>|nil
+---@return table<string, string>|nil
+local function merge_spawn_env(overrides)
+  if not overrides or not next(overrides) then
+    return nil
+  end
+  local env = {}
+  for k, v in pairs(vim.fn.environ()) do
+    if type(k) == "string" and v ~= nil and v ~= vim.NIL then
+      env[k] = type(v) == "string" and v or tostring(v)
+    end
+  end
+  for k, v in pairs(overrides) do
+    if type(k) == "string" and type(v) == "string" then
+      env[k] = v
+    end
+  end
+  return env
+end
+
 --- Spawn the agent non-blocking. Streams stdout/stderr via callbacks.
 ---@param job_id string Unique job / session key
 ---@param args string[]
@@ -657,12 +679,11 @@ function M.run_agent_command(job_id, args, on_stdout, on_stderr, on_exit, binary
 
   local headroom_mod = package.loaded["agent_engine.headroom"]
   if headroom_mod and headroom_mod.enabled() then
-    local spawn_env = vim.fn.environ()
     local cli = M.resolve_cli()
-    for k, v in pairs(headroom_mod.spawn_env(cli)) do
-      spawn_env[k] = v
+    local merged = merge_spawn_env(headroom_mod.spawn_env(cli))
+    if merged then
+      options.env = merged
     end
-    options.env = spawn_env
   end
 
   local log = package.loaded["agent_engine.integration_log"]

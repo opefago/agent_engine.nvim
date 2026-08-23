@@ -29,6 +29,8 @@ M.last_editor_win = nil
 
 local STREAM_NS = vim.api.nvim_create_namespace("AgentChatStream")
 local CHROME_NS = vim.api.nvim_create_namespace("AgentChatChrome")
+local PROMPT_NS = vim.api.nvim_create_namespace("AgentChatPrompt")
+local PROMPT_MARKER = "❯ "
 local protect_group = vim.api.nvim_create_augroup("AgentChatProtect", { clear = true })
 local focus_group = vim.api.nvim_create_augroup("AgentChatFocus", { clear = true })
 local scroll_group = vim.api.nvim_create_augroup("AgentChatScroll", { clear = true })
@@ -63,6 +65,8 @@ local scroll_bound_buf = nil
 local draft_bound_buf = nil
 ---@type uv.uv_timer_t|nil
 local draft_timer = nil
+---@type integer|nil
+local completion_guard_buf = nil
 
 ---@return boolean
 local function buf_ok(bufnr)
@@ -103,6 +107,7 @@ local function apply_input_draft(session_id)
   if s and s.draft_cursor and win_ok(M.input_winid) then
     pcall(vim.api.nvim_win_set_cursor, M.input_winid, s.draft_cursor)
   end
+  refresh_input_prompt()
 end
 
 ---@param bufnr integer
@@ -140,6 +145,7 @@ local function bind_input_draft_autocmd(bufnr)
           end
         end)
       end)
+      refresh_input_prompt()
     end,
   })
 end
@@ -246,6 +252,7 @@ local handle_stream_event
 local apply_stream_chunk
 local finalize_reply
 local refresh_input_chrome
+local refresh_input_prompt
 local try_slash_command
 local ensure_login_and_retry
 local render_stream_preview
@@ -636,6 +643,8 @@ local function define_stream_highlights()
   vim.api.nvim_set_hl(0, "AgentEngineThinkingLabel", { default = true, link = "Special" })
   vim.api.nvim_set_hl(0, "AgentEngineStream", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "AgentEngineSpinner", { default = true, link = "Special" })
+  vim.api.nvim_set_hl(0, "AgentEnginePromptMarker", { default = true, link = "Special" })
+  vim.api.nvim_set_hl(0, "AgentEnginePromptPlaceholder", { default = true, link = "Comment" })
 end
 
 ---@param session_id string|nil
@@ -665,6 +674,67 @@ local function stop_stream_anim(session_id)
   stream_anim[session_id] = nil
 end
 
+local function clear_stream_preview_buf()
+  if buf_ok(M.bufnr) then
+    vim.api.nvim_buf_clear_namespace(M.bufnr, STREAM_NS, 0, -1)
+  end
+end
+
+local function dismiss_completion_menu()
+  pcall(function()
+    require("blink.cmp").hide()
+  end)
+end
+
+---@return boolean
+local function prompt_completion_active()
+  if not buf_ok(M.input_bufnr) then
+    return false
+  end
+  local winid = vim.fn.bufwinid(M.input_bufnr)
+  if winid < 0 then
+    return false
+  end
+  local row, col = unpack(vim.api.nvim_win_get_cursor(winid))
+  local line = vim.api.nvim_buf_get_lines(M.input_bufnr, row - 1, row, false)[1] or ""
+  local before = line:sub(1, col)
+  if before:match("@%S*$") then
+    return true
+  end
+  return row == 1 and before:match("^/?%S*$") ~= nil
+end
+
+local function bind_input_completion_guard()
+  if not buf_ok(M.input_bufnr) or completion_guard_buf == M.input_bufnr then
+    return
+  end
+  completion_guard_buf = M.input_bufnr
+  vim.api.nvim_create_autocmd({ "InsertEnter", "BufEnter" }, {
+    buffer = M.input_bufnr,
+    callback = function()
+      vim.schedule(function()
+        if not prompt_completion_active() then
+          dismiss_completion_menu()
+        end
+      end)
+    end,
+  })
+end
+
+local function clear_all_stream_ui()
+  for sid in pairs(stream_ui_timers) do
+    pcall(function()
+      stream_ui_timers[sid]:stop()
+      stream_ui_timers[sid]:close()
+    end)
+    stream_ui_timers[sid] = nil
+  end
+  for sid in pairs(stream_anim) do
+    stop_stream_anim(sid)
+  end
+  clear_stream_preview_buf()
+end
+
 ---@return integer
 local function stream_ui_interval_ms()
   local ms = config.get().stream_ui_interval_ms
@@ -679,6 +749,9 @@ local function flush_stream_preview(sid)
   local acc = stream_ui_pending[sid]
   stream_ui_pending[sid] = nil
   if not acc or not buf_ok(M.bufnr) then
+    return
+  end
+  if acc.session_id and not agent.is_running(acc.session_id) then
     return
   end
   if acc.session_id and session.current().id ~= acc.session_id then
@@ -830,7 +903,10 @@ local function ensure_stream_anim(acc)
   timer:start(spec.interval, spec.interval, function()
     vim.schedule(function()
       local active = stream_anim[sid]
-      if not active then
+      if not active or not agent.is_running(sid) then
+        if not agent.is_running(sid) then
+          stop_stream_anim(sid)
+        end
         return
       end
       local frames = spinner.get().frames
@@ -843,6 +919,10 @@ end
 restore_stream_preview_if_running = function(session_id)
   session_id = session_id or session.current().id
   if not agent.is_running(session_id) then
+    stop_stream_anim(session_id)
+    if session.current().id == session_id then
+      clear_stream_preview_buf()
+    end
     return
   end
   local st = stream_anim[session_id]
@@ -874,6 +954,38 @@ local function session_labels()
   local cli = agent.resolve_cli(s.cli)
   local cli_label = cli and cli.id or (s.cli or "?")
   return cli_label, s.mode or "?", s.model or "?"
+end
+
+--- Prompt marker (always) and ghost placeholder (when input is empty).
+refresh_input_prompt = function()
+  if not buf_ok(M.input_bufnr) then
+    return
+  end
+
+  vim.api.nvim_buf_clear_namespace(M.input_bufnr, PROMPT_NS, 0, -1)
+
+  local lines = vim.api.nvim_buf_get_lines(M.input_bufnr, 0, -1, false)
+  local text = vim.trim(table.concat(lines, "\n"))
+
+  -- Marker is inline (caret sits after it). Placeholder is overlay so it does not
+  -- steal the initial caret position when the buffer is empty.
+  vim.api.nvim_buf_set_extmark(M.input_bufnr, PROMPT_NS, 0, 0, {
+    virt_text = { { PROMPT_MARKER, "AgentEnginePromptMarker" } },
+    virt_text_pos = "inline",
+    strict = false,
+  })
+
+  if text == "" then
+    local s = session.current()
+    local running = agent.is_running(s.id)
+    local placeholder = running and "Queue a follow-up…" or "Ask anything…"
+    vim.api.nvim_buf_set_extmark(M.input_bufnr, PROMPT_NS, 0, 0, {
+      virt_text = { { placeholder, "AgentEnginePromptPlaceholder" } },
+      virt_text_pos = "overlay",
+      virt_text_win_col = vim.api.nvim_strwidth(PROMPT_MARKER),
+      strict = false,
+    })
+  end
 end
 
 refresh_input_chrome = function()
@@ -960,6 +1072,8 @@ refresh_input_chrome = function()
       queue_badge
     )
   end
+
+  refresh_input_prompt()
 end
 
 --- Handle /mode /cli /model /new /clear slash commands typed in the prompt.
@@ -1167,6 +1281,8 @@ local function bind_input_keys()
   if not buf_ok(bufnr) then
     return
   end
+
+  bind_input_completion_guard()
 
   local opts = { buffer = bufnr, silent = true, nowait = true, remap = false }
 
@@ -1462,6 +1578,7 @@ local function clear_input()
   session.clear_draft()
   vim.bo[M.input_bufnr].modifiable = true
   vim.api.nvim_buf_set_lines(M.input_bufnr, 0, -1, false, { "" })
+  refresh_input_prompt()
 end
 
 --- Strip `@path` file tokens typed in the prompt bar (from the @ completion menu).
@@ -1492,7 +1609,11 @@ function M.focus_input()
     M.open()
   end
   if win_ok(M.input_winid) then
+    dismiss_completion_menu()
+    refresh_input_prompt()
     vim.api.nvim_set_current_win(M.input_winid)
+    local col = vim.api.nvim_strwidth(PROMPT_MARKER)
+    pcall(vim.api.nvim_win_set_cursor, M.input_winid, { 1, col })
     vim.cmd("startinsert!")
   end
 end
@@ -1581,7 +1702,15 @@ function M.open()
   end
 end
 
+--- Tear down live stream UI and completion menus (used by :AgentReload).
+function M.teardown()
+  dismiss_completion_menu()
+  clear_all_stream_ui()
+  completion_guard_buf = nil
+end
+
 function M.close()
+  dismiss_completion_menu()
   local input_win = M.input_winid
   local chat_win = M.winid
   M.input_winid = nil
@@ -2035,6 +2164,9 @@ local function update_stream_preview(acc)
   if not buf_ok(M.bufnr) then
     return
   end
+  if acc.session_id and not agent.is_running(acc.session_id) then
+    return
+  end
   if acc.session_id and session.current().id ~= acc.session_id then
     return
   end
@@ -2049,6 +2181,12 @@ end
 render_stream_preview = function(acc, frame, opts)
   opts = opts or {}
   if not buf_ok(M.bufnr) then
+    return
+  end
+  if acc.session_id and not agent.is_running(acc.session_id) then
+    if session.current().id == acc.session_id then
+      clear_stream_preview_buf()
+    end
     return
   end
   if acc.session_id and session.current().id ~= acc.session_id then
@@ -2368,12 +2506,9 @@ local function run_prompt(input, session_id, opts)
   end, function(chunk)
     table.insert(stderr_acc, chunk)
   end, function(code, _signal)
-    if stream_ui_pending[session_id] then
-      flush_stream_preview(session_id)
-    end
     stop_stream_anim(session_id)
     if buf_ok(M.bufnr) and session.current().id == session_id then
-      vim.api.nvim_buf_clear_namespace(M.bufnr, STREAM_NS, 0, -1)
+      clear_stream_preview_buf()
     end
 
     if acc.line_buf and acc.line_buf ~= "" then
@@ -2686,6 +2821,8 @@ end
 function M.cancel()
   local s = session.current()
   stop_stream_anim(s.id)
+  clear_stream_preview_buf()
+  dismiss_completion_menu()
   session.clear_queue(s.id)
   if agent.cancel(s.id) then
     vim.notify("Cancelled agent job (queue cleared)", vim.log.levels.WARN)
