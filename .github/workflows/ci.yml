@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Verify Neovim version
+        run: nvim --version | head -1
+
+      - name: Clone plenary.nvim
+        run: git clone --depth 1 https://github.com/nvim-lua/plenary.nvim.git /tmp/plenary.nvim
+
+      - name: Run tests
+        env:
+          PLENARY_DIR: /tmp/plenary.nvim
+        run: bash scripts/test.sh
+
+  stylua:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stylua
+        run: |
+          curl -fsSL https://github.com/JohnnyMorganz/StyLua/releases/download/v0.20.0/stylua-linux-x86_64.zip -o stylua.zip
+          unzip stylua.zip
+          sudo mv stylua /usr/local/bin/
+
+      - name: Check formatting
+        run: stylua --check lua/
