@@ -194,7 +194,7 @@ headroom = { enabled = true, mode = "proxy" },
 | Problem | Fix |
 | --- | --- |
 | `headroom missing` | `uv tool install --python 3.13 headroom-ai[all]` |
-| `doctor fail` | `/headroom proxy` then `/headroom doctor` |
+| `doctor fail` | Run `/headroom proxy` then `/headroom doctor` — status uses proxy port, not doctor |
 | No savings | Run `headroom perf`; ensure proxy mode not library |
 | Codex/MCP PATH issues | Use absolute path from `command -v headroom` in mcp.json |
 | Cursor agent ignores proxy | Try `mode = "wrap"` or Headroom’s manual Cursor setup |

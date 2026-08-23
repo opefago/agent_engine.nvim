@@ -18,6 +18,16 @@ local doctor_cached = nil
 ---@type integer|nil os.time() when doctor_cached was set
 local doctor_cached_at = nil
 local DOCTOR_CACHE_SEC = 30
+
+---@type boolean|nil cached proxy reachability (nil = uncached)
+local proxy_cached = nil
+---@type integer|nil os.time() when proxy_cached was set
+local proxy_cached_at = nil
+local PROXY_CACHE_SEC = 10
+
+---@type string|nil resolved absolute path to headroom binary
+local command_resolved = nil
+
 local proxy_warned = false
 
 --- Dialect → headroom wrap target (README agent matrix).
@@ -65,9 +75,94 @@ function M.command()
   return "headroom"
 end
 
+---@return string absolute path when discoverable
+local function resolve_command()
+  if command_resolved then
+    return command_resolved
+  end
+  local cmd = M.command()
+  if vim.fn.executable(cmd) == 1 then
+    local path = vim.fn.exepath(cmd)
+    if type(path) == "string" and path ~= "" then
+      command_resolved = path
+      return path
+    end
+  end
+  command_resolved = cmd
+  return cmd
+end
+
 ---@return boolean
 function M.available()
   return vim.fn.executable(M.command()) == 1
+end
+
+---@return string host
+---@return integer port
+local function proxy_host_port()
+  local c = cfg()
+  local base = M.proxy_base_url()
+  local host, port = base:match("^https?://([^:/]+):?(%d*)")
+  host = host or "127.0.0.1"
+  port = tonumber(port) or c.proxy_port or 8787
+  return host, port
+end
+
+---@param argv string[]
+---@param opts table|nil
+---@return table|nil result with code, stdout, stderr
+local function run_system(argv, opts)
+  local job = vim.system(argv, opts)
+  if not job then
+    return nil
+  end
+  return job:wait()
+end
+
+---@param host string
+---@param port integer
+---@return boolean
+local function port_open(host, port)
+  if vim.fn.executable("nc") == 1 then
+    local result = run_system({ "nc", "-z", "-w", "2", host, tostring(port) }, { timeout = 5000 })
+    if result and result.code == 0 then
+      return true
+    end
+  end
+  if vim.fn.executable("curl") == 1 then
+    local url = string.format("http://%s:%d", host, port)
+    local result = run_system({
+      "curl",
+      "-sf",
+      "--connect-timeout",
+      "2",
+      "--max-time",
+      "3",
+      "-o",
+      "/dev/null",
+      url,
+    }, { timeout = 5000 })
+    return result ~= nil and result.code == 0
+  end
+  return false
+end
+
+--- Proxy mode health: is the local proxy accepting connections?
+---@param force boolean|nil bypass cache
+---@return boolean
+local function proxy_healthy(force)
+  if M.mode() ~= "proxy" then
+    return true
+  end
+  local now = os.time()
+  if not force and proxy_cached ~= nil and proxy_cached_at and (now - proxy_cached_at) < PROXY_CACHE_SEC then
+    return proxy_cached
+  end
+  local host, port = proxy_host_port()
+  local ok = port_open(host, port)
+  proxy_cached = ok
+  proxy_cached_at = now
+  return ok
 end
 
 ---@return string base URL without trailing slash
@@ -93,6 +188,20 @@ function M.wrap_tool_for_cli(cli)
   return nil
 end
 
+---@param result table|nil
+---@return boolean
+local function doctor_passes(result)
+  if not result then
+    return false
+  end
+  if result.code == 0 then
+    return true
+  end
+  local out = (result.stdout or "") .. (result.stderr or "")
+  -- Headroom exits 1 when there are warnings but 0 hard failures.
+  return out:match("0 failure%s*%(") ~= nil
+end
+
 ---@param force boolean|nil bypass cache
 ---@return boolean ok
 ---@return string output
@@ -104,9 +213,12 @@ local function doctor_check(force)
   if not force and doctor_cached ~= nil and doctor_cached_at and (now - doctor_cached_at) < DOCTOR_CACHE_SEC then
     return doctor_cached, ""
   end
-  local job = vim.system({ M.command(), "doctor" }, { text = true, timeout = 15000 })
-  local out = vim.trim((job and job.stdout or "") .. "\n" .. (job and job.stderr or ""))
-  local ok = job and job.code == 0
+  local result = run_system({ resolve_command(), "doctor" }, { text = true, timeout = 15000 })
+  local out = vim.trim((result and result.stdout or "") .. "\n" .. (result and result.stderr or ""))
+  local ok = doctor_passes(result)
+  if not ok and out == "" then
+    out = "exit " .. tostring(result and result.code or "nil")
+  end
   doctor_cached = ok
   doctor_cached_at = now
   return ok, out
@@ -133,7 +245,7 @@ function M.start_proxy()
     log.warn("headroom", "start_proxy: binary not on PATH")
     return false, "headroom not on PATH"
   end
-  if doctor_check(true) then
+  if proxy_healthy(true) then
     log.info("headroom", "proxy already healthy at " .. M.proxy_base_url())
     return true, nil
   end
@@ -142,7 +254,7 @@ function M.start_proxy()
     local ok_closing, closing = pcall(function()
       return proxy_handle:is_closing()
     end)
-    if ok_closing and not closing then
+    if ok_closing and not closing and proxy_healthy(true) then
       return true, nil
     end
   end
@@ -154,7 +266,7 @@ function M.start_proxy()
     vim.list_extend(args, c.proxy_args)
   end
 
-  local handle, err = vim.uv.spawn(M.command(), {
+  local handle, err = vim.uv.spawn(resolve_command(), {
     args = args,
     stdio = { nil, nil, nil },
     detached = true,
@@ -169,21 +281,21 @@ function M.start_proxy()
   proxy_handle = handle
   log.info("headroom", "spawned proxy: " .. M.command() .. " " .. table.concat(args, " "))
 
-  -- Wait briefly for proxy to accept traffic (non-blocking poll).
-  for _ = 1, 20 do
+  -- Wait for the proxy port to accept traffic.
+  for _ = 1, 40 do
     vim.wait(250, function()
-      return doctor_check(true)
+      return proxy_healthy(true)
     end)
-    if doctor_check(true) then
+    if proxy_healthy(true) then
       log.info("headroom", "proxy ready at " .. M.proxy_base_url())
       return true, nil
     end
   end
 
-  doctor_cached = false
-  doctor_cached_at = os.time()
-  log.warn("headroom", "proxy started but doctor still failing")
-  return false, "proxy started but doctor check failed — run: headroom doctor"
+  proxy_cached = false
+  proxy_cached_at = os.time()
+  log.warn("headroom", "proxy started but port not reachable at " .. M.proxy_base_url())
+  return false, "proxy started but port not reachable — run: headroom proxy"
 end
 
 ---@param cli table|nil
@@ -222,13 +334,12 @@ function M.spawn_env(cli)
   end
 
   if use_proxy_env then
-    local healthy = doctor_check()
+    local healthy = proxy_healthy()
+    if not healthy and c.auto_start_proxy then
+      local started = M.start_proxy()
+      healthy = started and proxy_healthy(true)
+    end
     if not healthy then
-      if c.auto_start_proxy then
-        vim.schedule(function()
-          M.start_proxy()
-        end)
-      end
       if not proxy_warned then
         proxy_warned = true
         local msg = "Headroom proxy not ready — spawning agent without compression"
@@ -241,6 +352,7 @@ function M.spawn_env(cli)
       log.warn("headroom", "proxy not healthy — skipping proxy env for agent spawn")
       return env
     end
+    proxy_warned = false
 
     local base = M.proxy_base_url()
     local inject = c.proxy_env or {}
@@ -307,9 +419,10 @@ function M.mcp_install()
   if not M.available() then
     return false, "headroom not on PATH"
   end
-  local job = vim.system({ M.command(), "mcp", "install" }, { text = true, timeout = 120000 })
-  local out = vim.trim((job.stdout or "") .. "\n" .. (job.stderr or ""))
-  return job.code == 0, out ~= "" and out or ("exit " .. tostring(job.code))
+  local job = vim.system({ resolve_command(), "mcp", "install" }, { text = true, timeout = 120000 })
+  local result = job and job:wait() or nil
+  local out = vim.trim((result and result.stdout or "") .. "\n" .. (result and result.stderr or ""))
+  return result and result.code == 0, out ~= "" and out or ("exit " .. tostring(result and result.code))
 end
 
 --- Rough token estimate (chars / 4).
@@ -370,13 +483,14 @@ else:
     text = true,
     timeout = timeout,
   })
+  local result = job and job:wait() or nil
 
-  if not job or job.code ~= 0 then
-    local err = vim.trim(job.stderr or "") or ("exit " .. tostring(job and job.code))
+  if not result or result.code ~= 0 then
+    local err = vim.trim(result and result.stderr or "") or ("exit " .. tostring(result and result.code))
     return prompt, nil, err
   end
 
-  local stdout = vim.trim(job.stdout or "")
+  local stdout = vim.trim(result.stdout or "")
   if stdout == "" or stdout == prompt then
     return prompt, nil, nil
   end
@@ -403,7 +517,13 @@ function M.status_summary()
   local parts = { "Headroom: on", "mode=" .. M.mode() }
   if M.mode() == "proxy" then
     table.insert(parts, M.proxy_base_url())
-    table.insert(parts, doctor_check() and "doctor ok" or "doctor fail")
+    if proxy_healthy() then
+      table.insert(parts, "proxy up")
+    elseif cfg().auto_start_proxy then
+      table.insert(parts, "proxy starting")
+    else
+      table.insert(parts, "proxy down (/headroom proxy)")
+    end
   elseif M.mode() == "wrap" then
     table.insert(parts, "tool=" .. (cfg().wrap_tool or "auto"))
   elseif M.mode() == "mcp" then
@@ -421,17 +541,24 @@ function M.run_cli(subcmd, extra)
   if not M.available() then
     return false, "headroom not on PATH"
   end
-  local argv = { M.command(), subcmd }
+  local argv = { resolve_command(), subcmd }
   if extra then
     vim.list_extend(argv, extra)
   end
   log.info("headroom", "run: " .. table.concat(argv, " "))
   local job = vim.system(argv, { text = true, timeout = 120000 })
-  local out = vim.trim((job.stdout or "") .. "\n" .. (job.stderr or ""))
+  local result = job and job:wait() or nil
+  local out = vim.trim((result and result.stdout or "") .. "\n" .. (result and result.stderr or ""))
   if log.enabled() and out ~= "" then
     log.debug("headroom", subcmd .. " output: " .. out:sub(1, 800))
   end
-  return job.code == 0, out ~= "" and out or ("exit " .. tostring(job.code))
+  local ok
+  if subcmd == "doctor" then
+    ok = doctor_passes(result)
+  else
+    ok = result and result.code == 0
+  end
+  return ok, out ~= "" and out or ("exit " .. tostring(result and result.code))
 end
 
 function M.ensure_extension_loaded()
@@ -446,6 +573,22 @@ function M.ensure_extension_loaded()
     end
   end
   table.insert(config.get().extensions, mod)
+end
+
+--- Start proxy in the background when enabled and auto_start_proxy is set.
+function M.ensure_proxy()
+  if not M.enabled() or M.mode() ~= "proxy" then
+    return
+  end
+  local c = cfg()
+  if c.auto_start_proxy ~= true then
+    return
+  end
+  vim.schedule(function()
+    if not proxy_healthy(true) then
+      M.start_proxy()
+    end
+  end)
 end
 
 return M

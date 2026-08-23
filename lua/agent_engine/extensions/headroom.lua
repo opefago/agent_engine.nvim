@@ -58,7 +58,7 @@ M.slash_commands = {
       vim.notify("Headroom disabled", vim.log.levels.INFO)
     elseif sub == "doctor" then
       local ok, out = headroom.run_cli("doctor")
-      vim.notify(ok and out or out, ok and vim.log.levels.INFO or vim.log.levels.ERROR)
+      vim.notify(out, ok and vim.log.levels.INFO or vim.log.levels.WARN)
     elseif sub == "perf" then
       local ok, out = headroom.run_cli("perf")
       vim.notify(ok and out or out, ok and vim.log.levels.INFO or vim.log.levels.ERROR)

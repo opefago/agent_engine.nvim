@@ -551,6 +551,7 @@ function M.setup(opts, force)
 
   config.setup(opts)
   headroom.ensure_extension_loaded()
+  headroom.ensure_proxy()
   plugins.load()
   session.load()
 
