@@ -77,6 +77,7 @@ local M = {}
 ---@field default_model string
 ---@field models string[]
 ---@field force boolean
+---@field auto_login boolean run agent login when a prompt is sent while logged out
 ---@field trust boolean
 ---@field chat_width number
 ---@field chat_title string
@@ -165,6 +166,7 @@ local defaults = {
     "cursor-grok-4.6-high-fast",
   },
   force = false,
+  auto_login = true,
   trust = true,
   chat_width = 72,
   chat_title = "Agent Chat",

@@ -2,7 +2,7 @@
 # Install agent_engine.nvim into the Lazy.nvim plugin directory.
 set -euo pipefail
 
-REPO_URL="${1:-https://github.com/YOURUSER/agent_engine.nvim.git}"
+REPO_URL="${1:-https://github.com/opefago/agent_engine.nvim.git}"
 NVIM_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/nvim"
 DEST="${AGENT_ENGINE_DEST:-$NVIM_DATA/lazy/agent_engine.nvim}"
 
@@ -22,7 +22,7 @@ cat <<'EOF'
 Installed. Add to Lazy.nvim (lua/plugins/agent_engine.lua):
 
 return {
-  "YOURUSER/agent_engine.nvim",
+  "opefago/agent_engine.nvim",
   lazy = false,
   opts = {
     default_cli = "cursor",

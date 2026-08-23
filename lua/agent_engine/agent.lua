@@ -451,6 +451,56 @@ function M.create_chat()
   return chat_id, nil
 end
 
+local LOGIN_JOB_ID = "__agent_engine_login__"
+
+--- Whether a Cursor agent login flow is in progress.
+---@return boolean
+function M.is_login_running()
+  return M.jobs[LOGIN_JOB_ID] ~= nil
+end
+
+--- Run `agent login` for the Cursor dialect (async).
+---@param cli_id string|nil
+---@param on_done fun(ok: boolean, err: string|nil)|nil
+---@return boolean started
+---@return string|nil err
+function M.login(cli_id, on_done)
+  local cli = M.resolve_cli(cli_id)
+  if not cli or cli.dialect ~= "cursor" then
+    local err = "login requires the Cursor agent CLI"
+    if on_done then
+      vim.schedule(function()
+        on_done(false, err)
+      end)
+    end
+    return false, err
+  end
+
+  if M.is_login_running() then
+    local err = "login already in progress"
+    if on_done then
+      vim.schedule(function()
+        on_done(false, err)
+      end)
+    end
+    return false, err
+  end
+
+  local argv = cursor_subcommand_argv(cli, "login")
+  local binary = argv[1]
+  local args = vim.list_slice(argv, 2)
+  local stderr_acc = {}
+
+  return M.run_agent_command(LOGIN_JOB_ID, args, nil, function(chunk)
+    table.insert(stderr_acc, chunk)
+  end, function(_code)
+    local ok_auth, auth_err = M.check_auth(cli_id)
+    if on_done then
+      on_done(ok_auth, ok_auth and nil or (auth_err or vim.trim(table.concat(stderr_acc))))
+    end
+  end, binary)
+end
+
 --- Verify Cursor agent login (no-op for other dialects).
 ---@param cli_id string|nil
 ---@return boolean ok

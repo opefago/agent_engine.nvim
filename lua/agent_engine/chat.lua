@@ -247,6 +247,7 @@ local apply_stream_chunk
 local finalize_reply
 local refresh_input_chrome
 local try_slash_command
+local ensure_login_and_retry
 local render_stream_preview
 local restore_stream_preview_if_running
 
@@ -350,6 +351,7 @@ local function build_transcript_help(km)
     "| `/close` | Close this chat tab |",
     "| `/clear` | Clear transcript and remote session |",
     "| `/cancel` | Cancel job and clear queue |",
+    "| `/login` | Authenticate with Cursor agent CLI |",
     "| `/queue` | Show queued prompt count |",
     "| `/queue clear` | Clear queued prompts |",
     "| `/mcp` | List MCP servers (Cursor CLI) |",
@@ -1153,9 +1155,12 @@ try_slash_command = function(text)
       vim.notify("Plugin: /plugin list | /plugin add path | /plugin remove path", vim.log.levels.INFO)
     end
     return true
+  elseif cmd == "login" then
+    M.run_login()
+    return true
   elseif cmd == "help" or cmd == "h" then
     vim.notify(
-      "Slash: /mcp /plugin /selections /attach /pending /history /mode /cli /model /new /close /clear /cancel /queue",
+      "Slash: /login /mcp /plugin /selections /attach /pending /history /mode /cli /model /new /close /clear /cancel /queue",
       vim.log.levels.INFO
     )
     return true
@@ -2217,13 +2222,56 @@ finalize_reply = function(acc, stderr_acc, code)
   end
 
   if is_auth_error(reply) then
-    reply = "**Not logged in.** Run `agent login` in a terminal, then try again."
+    reply = "**Not logged in.** Run `/login` or send another prompt to authenticate automatically."
   end
 
   if reply == "" then
     reply = string.format("_(no output, exit %s)_", tostring(code))
   end
   return reply
+end
+
+---@param input string
+---@param session_id string
+---@param opts { raw?: boolean, retry_after_login?: boolean }|nil
+ensure_login_and_retry = function(input, session_id, opts)
+  local s = session.get_by_id(session_id)
+  if not s then
+    return
+  end
+
+  if agent.is_login_running() then
+    vim.notify("Login already in progress — complete browser authentication", vim.log.levels.INFO)
+    return
+  end
+
+  vim.notify("Not logged in — starting login…", vim.log.levels.INFO)
+  session.append_message(
+    "assistant",
+    "**Not logged in.** Starting login — complete authentication in your browser, then your prompt will be sent.",
+    session_id
+  )
+  if session.current().id == session_id then
+    M.refresh()
+  end
+
+  agent.login(s.cli, function(ok, err)
+    if not ok then
+      vim.notify(err or "Login failed — run /login to try again", vim.log.levels.ERROR)
+      session.append_message(
+        "assistant",
+        "**Login failed.** Run `/login` to try again, then resend your prompt.",
+        session_id
+      )
+      if session.current().id == session_id then
+        M.refresh()
+      end
+      return
+    end
+
+    vim.notify("Logged in — sending your prompt", vim.log.levels.INFO)
+    run_prompt(input, session_id, vim.tbl_extend("force", opts or {}, { retry_after_login = true }))
+  end)
 end
 
 ---@param input string
@@ -2265,10 +2313,15 @@ local function run_prompt(input, session_id, opts)
   if cli and cli.dialect == "cursor" then
     local ok_auth, auth_err = agent.check_auth(s.cli)
     if not ok_auth then
-      vim.notify(auth_err or "Agent CLI not logged in — run: agent login", vim.log.levels.ERROR)
+      local cfg = config.get()
+      if cfg.auto_login ~= false and not opts.retry_after_login then
+        ensure_login_and_retry(input, session_id, opts)
+        return
+      end
+      vim.notify(auth_err or "Agent CLI not logged in — run /login", vim.log.levels.ERROR)
       session.append_message(
         "assistant",
-        "**Not logged in.** Run `agent login` in a terminal, then try again.",
+        "**Not logged in.** Run `/login`, then try again.",
         session_id
       )
       if session.current().id == session_id then
@@ -2375,7 +2428,7 @@ local function run_prompt(input, session_id, opts)
     if code and code ~= 0 then
       vim.notify("Agent exited with code " .. tostring(code), vim.log.levels.WARN)
     elseif is_auth_error(reply) then
-      vim.notify("Agent CLI not logged in — run: agent login", vim.log.levels.ERROR)
+      vim.notify("Agent CLI not logged in — run /login", vim.log.levels.ERROR)
     end
 
     if auth_failed then
@@ -2438,6 +2491,36 @@ function M.pick_file_attachment()
   vim.ui.input({ prompt = "Attach file path: " }, function(path)
     if path and path ~= "" then
       M.add_file_attachment(path)
+    end
+  end)
+end
+
+--- Start Cursor agent login (`/login`).
+function M.run_login()
+  local s = session.current()
+  local cli = agent.resolve_cli(s.cli)
+  if not cli or cli.dialect ~= "cursor" then
+    vim.notify("Login is only supported for the Cursor agent CLI", vim.log.levels.WARN)
+    return
+  end
+
+  local ok_auth = agent.check_auth(s.cli)
+  if ok_auth then
+    vim.notify("Already logged in to Cursor agent", vim.log.levels.INFO)
+    return
+  end
+
+  if agent.is_login_running() then
+    vim.notify("Login already in progress — complete browser authentication", vim.log.levels.INFO)
+    return
+  end
+
+  vim.notify("Starting Cursor agent login…", vim.log.levels.INFO)
+  agent.login(s.cli, function(ok, err)
+    if ok then
+      vim.notify("Logged in to Cursor agent", vim.log.levels.INFO)
+    else
+      vim.notify(err or "Login failed", vim.log.levels.ERROR)
     end
   end)
 end
