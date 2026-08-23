@@ -129,24 +129,28 @@ function M.collect_files(query, callback)
   end
 
   if vim.fn.executable("rg") == 1 then
-    vim.system({ "rg", "--files", "--no-messages", "--color", "never", "-g", "!.git" }, { cwd = cwd, text = true }, function(obj)
-      local files = {}
-      if obj.code == 0 and obj.stdout then
-        local q = query:lower()
-        for file in vim.gsplit(vim.trim(obj.stdout), "\n", { plain = true, trimempty = true }) do
-          local norm = vim.fs.normalize(file)
-          if q == "" or norm:lower():find(q, 1, true) then
-            table.insert(files, norm)
-            if #files >= MAX_FILES then
-              break
+    vim.system(
+      { "rg", "--files", "--no-messages", "--color", "never", "-g", "!.git" },
+      { cwd = cwd, text = true },
+      function(obj)
+        local files = {}
+        if obj.code == 0 and obj.stdout then
+          local q = query:lower()
+          for file in vim.gsplit(vim.trim(obj.stdout), "\n", { plain = true, trimempty = true }) do
+            local norm = vim.fs.normalize(file)
+            if q == "" or norm:lower():find(q, 1, true) then
+              table.insert(files, norm)
+              if #files >= MAX_FILES then
+                break
+              end
             end
           end
         end
+        vim.schedule(function()
+          callback(files)
+        end)
       end
-      vim.schedule(function()
-        callback(files)
-      end)
-    end)
+    )
     return
   end
 

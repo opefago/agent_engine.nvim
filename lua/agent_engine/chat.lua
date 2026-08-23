@@ -1046,13 +1046,7 @@ try_slash_command = function(text)
         for i, ref in ipairs(s.references) do
           table.insert(
             parts,
-            string.format(
-              "  %d. %s:%d-%d",
-              i,
-              vim.fn.fnamemodify(ref.file, ":."),
-              ref.start_line,
-              ref.end_line
-            )
+            string.format("  %d. %s:%d-%d", i, vim.fn.fnamemodify(ref.file, ":."), ref.start_line, ref.end_line)
           )
         end
         table.insert(parts, "Use /selections clear or /selections N to remove")
@@ -1393,13 +1387,7 @@ local function render()
     table.insert(lines, "### Pending code selections")
     table.insert(lines, "_Added via `<leader>Cr` — clear with `r`, `/selections clear`, or `/selections N`_")
     for i, ref in ipairs(s.references) do
-      local loc = string.format(
-        "%d. `%s:%d-%d`",
-        i,
-        vim.fn.fnamemodify(ref.file, ":."),
-        ref.start_line,
-        ref.end_line
-      )
+      local loc = string.format("%d. `%s:%d-%d`", i, vim.fn.fnamemodify(ref.file, ":."), ref.start_line, ref.end_line)
       table.insert(lines, loc)
       local preview = preview_one_line(ref.text or "", 64)
       if preview ~= "" then
@@ -2319,11 +2307,7 @@ local function run_prompt(input, session_id, opts)
         return
       end
       vim.notify(auth_err or "Agent CLI not logged in — run /login", vim.log.levels.ERROR)
-      session.append_message(
-        "assistant",
-        "**Not logged in.** Run `/login`, then try again.",
-        session_id
-      )
+      session.append_message("assistant", "**Not logged in.** Run `/login`, then try again.", session_id)
       if session.current().id == session_id then
         M.refresh()
       end

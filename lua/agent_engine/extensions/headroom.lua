@@ -13,10 +13,7 @@ function M.setup(api)
     return
   end
   if not headroom.available() then
-    api.notify(
-      "headroom: install CLI — uv tool install --python 3.13 headroom-ai[all]",
-      vim.log.levels.WARN
-    )
+    api.notify("headroom: install CLI — uv tool install --python 3.13 headroom-ai[all]", vim.log.levels.WARN)
     return
   end
   local c = require("agent_engine.config").get().headroom or {}
@@ -67,7 +64,10 @@ M.slash_commands = {
       vim.notify(ok and out or out, ok and vim.log.levels.INFO or vim.log.levels.ERROR)
     elseif sub == "proxy" then
       local ok, err = headroom.start_proxy()
-      vim.notify(ok and ("Proxy at " .. headroom.proxy_base_url()) or err, ok and vim.log.levels.INFO or vim.log.levels.ERROR)
+      vim.notify(
+        ok and ("Proxy at " .. headroom.proxy_base_url()) or err,
+        ok and vim.log.levels.INFO or vim.log.levels.ERROR
+      )
     elseif sub == "mcp" then
       if rest == "install" then
         local ok, out = headroom.mcp_install()
@@ -90,7 +90,12 @@ M.slash_commands = {
         vim.notify("Headroom test failed: " .. err, vim.log.levels.ERROR)
       elseif stats then
         vim.notify(
-          string.format("Library: %d → %d est. tokens (~%d%% saved)", stats.before_tokens, stats.after_tokens, stats.saved_pct),
+          string.format(
+            "Library: %d → %d est. tokens (~%d%% saved)",
+            stats.before_tokens,
+            stats.after_tokens,
+            stats.saved_pct
+          ),
           vim.log.levels.INFO
         )
       else

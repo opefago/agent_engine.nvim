@@ -227,9 +227,14 @@ local function register_keymaps()
     { "n", km.reject_all, ghost.reject_all, "Reject all ghost hunks in file" },
     { "n", km.next_hunk, ghost.next_hunk, "Next ghost hunk" },
     { "n", km.prev_hunk, ghost.prev_hunk, "Previous ghost hunk" },
-    { "n", km.next_pending_file, function()
-      ghost.goto_next_pending_file()
-    end, "Next file with pending agent edits" },
+    {
+      "n",
+      km.next_pending_file,
+      function()
+        ghost.goto_next_pending_file()
+      end,
+      "Next file with pending agent edits",
+    },
   }
 
   for _, m in ipairs(maps) do
@@ -571,10 +576,7 @@ function M.setup(opts, force)
     for _, cli in ipairs(installed) do
       table.insert(names, cli.id)
     end
-    vim.notify(
-      "agent_engine: CLIs found — " .. table.concat(names, ", "),
-      vim.log.levels.INFO
-    )
+    vim.notify("agent_engine: CLIs found — " .. table.concat(names, ", "), vim.log.levels.INFO)
   end
 
   register_keymaps()
