@@ -1,8 +1,6 @@
-local busted = require("plenary.busted")
-local describe = busted.describe
-local it = busted.it
-local before_each = busted.before_each
-local assert = busted.assert
+local describe = require("plenary.busted").describe
+local it = require("plenary.busted").it
+local before_each = require("plenary.busted").before_each
 
 local function reload_config()
   package.loaded["agent_engine.config"] = nil
