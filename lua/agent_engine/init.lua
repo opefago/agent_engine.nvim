@@ -559,9 +559,6 @@ function M.setup(opts, force)
     if integration_log.enabled() then
       integration_log.info("agent_engine", "started with headroom + integrations_log")
       integration_log.info("agent_engine", "log file: " .. integration_log.path())
-      if headroom.available() then
-        headroom.doctor_ok()
-      end
     end
   end
 

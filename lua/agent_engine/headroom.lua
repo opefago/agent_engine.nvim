@@ -13,6 +13,13 @@ local runtime_enabled = nil
 ---@type uv.uv_process_t|nil
 local proxy_handle = nil
 
+---@type boolean|nil cached doctor result (nil = uncached)
+local doctor_cached = nil
+---@type integer|nil os.time() when doctor_cached was set
+local doctor_cached_at = nil
+local DOCTOR_CACHE_SEC = 30
+local proxy_warned = false
+
 --- Dialect → headroom wrap target (README agent matrix).
 local WRAP_TOOLS = {
   cursor = "cursor",
@@ -86,15 +93,23 @@ function M.wrap_tool_for_cli(cli)
   return nil
 end
 
+---@param force boolean|nil bypass cache
 ---@return boolean ok
 ---@return string output
-local function doctor_check()
+local function doctor_check(force)
   if not M.available() then
     return false, ""
   end
+  local now = os.time()
+  if not force and doctor_cached ~= nil and doctor_cached_at and (now - doctor_cached_at) < DOCTOR_CACHE_SEC then
+    return doctor_cached, ""
+  end
   local job = vim.system({ M.command(), "doctor" }, { text = true, timeout = 15000 })
   local out = vim.trim((job and job.stdout or "") .. "\n" .. (job and job.stderr or ""))
-  return job and job.code == 0, out
+  local ok = job and job.code == 0
+  doctor_cached = ok
+  doctor_cached_at = now
+  return ok, out
 end
 
 ---@return boolean
@@ -118,7 +133,7 @@ function M.start_proxy()
     log.warn("headroom", "start_proxy: binary not on PATH")
     return false, "headroom not on PATH"
   end
-  if doctor_check() then
+  if doctor_check(true) then
     log.info("headroom", "proxy already healthy at " .. M.proxy_base_url())
     return true, nil
   end
@@ -154,17 +169,19 @@ function M.start_proxy()
   proxy_handle = handle
   log.info("headroom", "spawned proxy: " .. M.command() .. " " .. table.concat(args, " "))
 
-  -- Wait briefly for proxy to accept traffic.
+  -- Wait briefly for proxy to accept traffic (non-blocking poll).
   for _ = 1, 20 do
     vim.wait(250, function()
-      return doctor_check()
+      return doctor_check(true)
     end)
-    if doctor_check() then
+    if doctor_check(true) then
       log.info("headroom", "proxy ready at " .. M.proxy_base_url())
       return true, nil
     end
   end
 
+  doctor_cached = false
+  doctor_cached_at = os.time()
   log.warn("headroom", "proxy started but doctor still failing")
   return false, "proxy started but doctor check failed — run: headroom doctor"
 end
@@ -205,13 +222,24 @@ function M.spawn_env(cli)
   end
 
   if use_proxy_env then
-    if c.auto_start_proxy then
-      local ok, err = M.start_proxy()
-      if not ok and c.fallback_on_error == false then
-        vim.notify("headroom proxy: " .. (err or "failed"), vim.log.levels.ERROR)
-      elseif not ok then
-        vim.notify("headroom proxy: " .. (err or "failed") .. " (agent may bypass compression)", vim.log.levels.WARN)
+    local healthy = doctor_check()
+    if not healthy then
+      if c.auto_start_proxy then
+        vim.schedule(function()
+          M.start_proxy()
+        end)
       end
+      if not proxy_warned then
+        proxy_warned = true
+        local msg = "Headroom proxy not ready — spawning agent without compression"
+        if c.fallback_on_error == false then
+          vim.notify(msg, vim.log.levels.ERROR)
+        else
+          vim.notify(msg, vim.log.levels.WARN)
+        end
+      end
+      log.warn("headroom", "proxy not healthy — skipping proxy env for agent spawn")
+      return env
     end
 
     local base = M.proxy_base_url()
@@ -375,7 +403,7 @@ function M.status_summary()
   local parts = { "Headroom: on", "mode=" .. M.mode() }
   if M.mode() == "proxy" then
     table.insert(parts, M.proxy_base_url())
-    table.insert(parts, M.doctor_ok() and "doctor ok" or "doctor fail")
+    table.insert(parts, doctor_check() and "doctor ok" or "doctor fail")
   elseif M.mode() == "wrap" then
     table.insert(parts, "tool=" .. (cfg().wrap_tool or "auto"))
   elseif M.mode() == "mcp" then

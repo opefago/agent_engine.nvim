@@ -643,9 +643,10 @@ end
 ---@param on_stderr fun(chunk: string)|nil
 ---@param on_exit fun(code: integer|nil, signal: integer|nil)|nil
 ---@param binary string|nil override binary (defaults to active CLI)
+---@param cli AgentEngineDiscoveredCli|nil CLI used for this run (session-aware Headroom)
 ---@return boolean ok
 ---@return string|nil err
-function M.run_agent_command(job_id, args, on_stdout, on_stderr, on_exit, binary)
+function M.run_agent_command(job_id, args, on_stdout, on_stderr, on_exit, binary, cli)
   if type(job_id) ~= "string" or job_id == "" then
     return false, "job_id must be a non-empty string"
   end
@@ -679,8 +680,8 @@ function M.run_agent_command(job_id, args, on_stdout, on_stderr, on_exit, binary
 
   local headroom_mod = package.loaded["agent_engine.headroom"]
   if headroom_mod and headroom_mod.enabled() then
-    local cli = M.resolve_cli()
-    local merged = merge_spawn_env(headroom_mod.spawn_env(cli))
+    local resolved = cli or M.resolve_cli()
+    local merged = merge_spawn_env(headroom_mod.spawn_env(resolved))
     if merged then
       options.env = merged
     end
@@ -786,7 +787,7 @@ function M.run_prompt(job_id, opts, on_stdout, on_stderr, on_exit)
     return false, "No executable agent found on PATH"
   end
 
-  return M.run_agent_command(job_id, args, on_stdout, on_stderr, on_exit, binary)
+  return M.run_agent_command(job_id, args, on_stdout, on_stderr, on_exit, binary, cli)
 end
 
 -- Back-compat alias used by older call sites.

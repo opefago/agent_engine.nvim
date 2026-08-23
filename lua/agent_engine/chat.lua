@@ -53,6 +53,7 @@ local stream_ui_timers = {}
 local render_cache = { session_id = "", body_fp = "" }
 
 local markdown_streaming_disabled = false
+local chat_highlights_defined = false
 
 --- Auto-scroll transcript while streaming unless the user scrolled up.
 local scroll_follow = true
@@ -68,6 +69,10 @@ local draft_timer = nil
 ---@type integer|nil
 local completion_guard_buf = nil
 
+-- Forward decls (used by draft autocmds before the implementations below).
+local refresh_input_chrome
+local define_stream_highlights
+
 ---@return boolean
 local function buf_ok(bufnr)
   return bufnr ~= nil and vim.api.nvim_buf_is_valid(bufnr)
@@ -76,6 +81,38 @@ end
 ---@return boolean
 local function win_ok(winid)
   return winid ~= nil and vim.api.nvim_win_is_valid(winid)
+end
+
+--- Prompt marker (always) and ghost placeholder (when input is empty).
+local function refresh_input_prompt()
+  if not buf_ok(M.input_bufnr) then
+    return
+  end
+
+  vim.api.nvim_buf_clear_namespace(M.input_bufnr, PROMPT_NS, 0, -1)
+
+  local lines = vim.api.nvim_buf_get_lines(M.input_bufnr, 0, -1, false)
+  local text = vim.trim(table.concat(lines, "\n"))
+
+  -- Marker is inline (caret sits after it). Placeholder is overlay so it does not
+  -- steal the initial caret position when the buffer is empty.
+  vim.api.nvim_buf_set_extmark(M.input_bufnr, PROMPT_NS, 0, 0, {
+    virt_text = { { PROMPT_MARKER, "AgentEnginePromptMarker" } },
+    virt_text_pos = "inline",
+    strict = false,
+  })
+
+  if text == "" then
+    local s = session.current()
+    local running = agent.is_running(s.id)
+    local placeholder = running and "Queue a follow-up…" or "Ask anything…"
+    vim.api.nvim_buf_set_extmark(M.input_bufnr, PROMPT_NS, 0, 0, {
+      virt_text = { { placeholder, "AgentEnginePromptPlaceholder" } },
+      virt_text_pos = "overlay",
+      virt_text_win_col = vim.api.nvim_strwidth(PROMPT_MARKER),
+      strict = false,
+    })
+  end
 end
 
 ---@param session_id string|nil
@@ -112,7 +149,7 @@ end
 
 ---@param bufnr integer
 local function bind_input_draft_autocmd(bufnr)
-  if not buf_ok(bufnr) or draft_bound_buf == bufnr then
+  if not buf_ok(bufnr) then
     return
   end
   draft_bound_buf = bufnr
@@ -251,8 +288,6 @@ local sanitize_user_facing
 local handle_stream_event
 local apply_stream_chunk
 local finalize_reply
-local refresh_input_chrome
-local refresh_input_prompt
 local try_slash_command
 local ensure_login_and_retry
 local render_stream_preview
@@ -612,6 +647,8 @@ end
 local function ensure_input_buf()
   if buf_ok(M.input_bufnr) then
     vim.bo[M.input_bufnr].filetype = "agentprompt"
+    bind_input_draft_autocmd(M.input_bufnr)
+    define_stream_highlights()
     return M.input_bufnr
   end
 
@@ -634,17 +671,35 @@ local function ensure_input_buf()
   vim.bo[M.input_bufnr].buflisted = false
   pcall(require("agent_engine.prompt_complete").setup_input, M.input_bufnr)
   bind_input_draft_autocmd(M.input_bufnr)
+  define_stream_highlights()
   apply_input_draft()
   return M.input_bufnr
 end
 
-local function define_stream_highlights()
+define_stream_highlights = function()
+  if chat_highlights_defined then
+    return
+  end
+  chat_highlights_defined = true
+
   vim.api.nvim_set_hl(0, "AgentEngineThinking", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "AgentEngineThinkingLabel", { default = true, link = "Special" })
   vim.api.nvim_set_hl(0, "AgentEngineStream", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "AgentEngineSpinner", { default = true, link = "Special" })
   vim.api.nvim_set_hl(0, "AgentEnginePromptMarker", { default = true, link = "Special" })
-  vim.api.nvim_set_hl(0, "AgentEnginePromptPlaceholder", { default = true, link = "Comment" })
+  -- Slightly faded ghost placeholder (Ask anything… / Queue a follow-up…).
+  local comment = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
+  local placeholder = { default = true, italic = true, blend = 45 }
+  if comment.fg then
+    placeholder.fg = comment.fg
+  elseif comment.ctermfg then
+    placeholder.ctermfg = comment.ctermfg
+  else
+    placeholder.link = "NonText"
+    placeholder.blend = nil
+    placeholder.italic = nil
+  end
+  vim.api.nvim_set_hl(0, "AgentEnginePromptPlaceholder", placeholder)
 end
 
 ---@param session_id string|nil
@@ -954,38 +1009,6 @@ local function session_labels()
   local cli = agent.resolve_cli(s.cli)
   local cli_label = cli and cli.id or (s.cli or "?")
   return cli_label, s.mode or "?", s.model or "?"
-end
-
---- Prompt marker (always) and ghost placeholder (when input is empty).
-refresh_input_prompt = function()
-  if not buf_ok(M.input_bufnr) then
-    return
-  end
-
-  vim.api.nvim_buf_clear_namespace(M.input_bufnr, PROMPT_NS, 0, -1)
-
-  local lines = vim.api.nvim_buf_get_lines(M.input_bufnr, 0, -1, false)
-  local text = vim.trim(table.concat(lines, "\n"))
-
-  -- Marker is inline (caret sits after it). Placeholder is overlay so it does not
-  -- steal the initial caret position when the buffer is empty.
-  vim.api.nvim_buf_set_extmark(M.input_bufnr, PROMPT_NS, 0, 0, {
-    virt_text = { { PROMPT_MARKER, "AgentEnginePromptMarker" } },
-    virt_text_pos = "inline",
-    strict = false,
-  })
-
-  if text == "" then
-    local s = session.current()
-    local running = agent.is_running(s.id)
-    local placeholder = running and "Queue a follow-up…" or "Ask anything…"
-    vim.api.nvim_buf_set_extmark(M.input_bufnr, PROMPT_NS, 0, 0, {
-      virt_text = { { placeholder, "AgentEnginePromptPlaceholder" } },
-      virt_text_pos = "overlay",
-      virt_text_win_col = vim.api.nvim_strwidth(PROMPT_MARKER),
-      strict = false,
-    })
-  end
 end
 
 refresh_input_chrome = function()
@@ -1707,6 +1730,8 @@ function M.teardown()
   dismiss_completion_menu()
   clear_all_stream_ui()
   completion_guard_buf = nil
+  draft_bound_buf = nil
+  chat_highlights_defined = false
 end
 
 function M.close()
